@@ -4069,10 +4069,25 @@ if (UNIX)
   #tobuild(linux.vfork-fib linux/vfork-fib.c)
 
   # runs of other builds with custom DR options
+  # TODO i#4497: The following two tests need to trigger reset when multiple
+  # threads are active. But, the current -reset_at_fragment_count value does
+  # not ensure that. We need to make these tests more robust, perhaps by
+  # using a different trigger like -reset_at_nth_thread (pending i#4496).
   torunonly(linux.thread-reset linux.thread linux/thread.c
     "-enable_reset -reset_at_fragment_count 100" "")
   torunonly(linux.clone-reset linux.clone linux/clone.c
     "-enable_reset -reset_at_fragment_count 100" "")
+  if (AARCHXX)
+    # Test our diagnostic option -steal_reg_at_reset, which is also a stress
+    # test of reset and register stealing.
+    if (ARM)
+      set(new_reg 9)
+    else ()
+      set(new_reg 29)
+    endif ()
+    torunonly(linux.steal-switch linux.thread linux/thread.c
+      "-enable_reset -reset_at_fragment_count 100 -steal_reg_at_reset ${new_reg}" "")
+  endif ()
   tobuild(pthreads.pthreads pthreads/pthreads.c)
   tobuild(pthreads.pthreads_exit pthreads/pthreads_exit.c)
   tobuild(pthreads.ptsig pthreads/ptsig.c)
