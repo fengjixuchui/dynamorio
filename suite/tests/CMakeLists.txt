@@ -1432,6 +1432,7 @@ function(torun test key source native standalone_dr dr_ops exe_ops added_out)
       -D postcmd3=${${key}_postcmd3}
       -D cmp=${CMAKE_CURRENT_BINARY_DIR}/${expectbase}.expect
       -D code=${${key}_code}
+      -D capture=${${key}_runcmp_capture}
       -P ${runcmp_script})
     # No support for regex here (ctest can't handle large regex)
     set(ALREADY_REGEX ON)
@@ -1824,6 +1825,11 @@ if (CLIENT_INTERFACE)
   if (NOT ANDROID)
     # XXX i#1874: get working on Android
     tobuild_api(api.ir api/ir_${sfx}.c "" "" OFF OFF)
+    if (AARCH64)
+      # The ir_aarch64.expect file is too large for CMake's regexes.
+      set(api.ir_runcmp "${CMAKE_CURRENT_SOURCE_DIR}/runcmp.cmake")
+      set(api.ir_runcmp_capture "stderr")
+    endif ()
     # XXX i#1686: add ARM's headers too once they are all created
     if (NOT ARM AND NOT AARCH64 AND "${CMAKE_GENERATOR}" MATCHES "Unix Makefiles")
       # CMake's Unix Makefiles dependence analysis doesn't run the preprocessor
@@ -1850,12 +1856,17 @@ if (CLIENT_INTERFACE)
     endif ()
 
     if (AARCH64)
-        tobuild_api(api.ir_negative api/ir_aarch64_negative.c "" "" OFF OFF)
+      tobuild_api(api.ir_negative api/ir_aarch64_negative.c "" "" OFF OFF)
     endif (AARCH64)
   endif ()
 
   # test static decoder library
   tobuild_api(api.ir-static api/ir_${sfx}.c "" "" ON OFF)
+  if (AARCH64)
+    # The ir_aarch64.expect file is too large for CMake's regexes.
+    set(api.ir-static_runcmp "${CMAKE_CURRENT_SOURCE_DIR}/runcmp.cmake")
+    set(api.ir-static_runcmp_capture "stderr")
+  endif ()
 
   if (ARM)
     if (NOT ANDROID) # XXX i#1874: get working on Android
@@ -2753,6 +2764,14 @@ if (CLIENT_INTERFACE)
     set(client.pcache-use_depends client.pcache)
     set(DynamoRIO_SET_PREFERRED_BASE OFF)
   endif (X86)
+
+  if (AARCHXX)
+    tobuild_ci(client.stolen-reg client-interface/stolen-reg.c "" "" "")
+    link_with_pthread(client.stolen-reg)
+
+    tobuild_ci(client.ldstex client-interface/ldstex.c "" "" "")
+    link_with_pthread(client.ldstex)
+  endif ()
 
   if (ARM AND NOT ANDROID)
     # i#2580: DT_RUNPATH is not yet supported on android so we disable this test on
@@ -4069,14 +4088,10 @@ if (UNIX)
   #tobuild(linux.vfork-fib linux/vfork-fib.c)
 
   # runs of other builds with custom DR options
-  # TODO i#4497: The following two tests need to trigger reset when multiple
-  # threads are active. But, the current -reset_at_fragment_count value does
-  # not ensure that. We need to make these tests more robust, perhaps by
-  # using a different trigger like -reset_at_nth_thread (pending i#4496).
   torunonly(linux.thread-reset linux.thread linux/thread.c
-    "-enable_reset -reset_at_fragment_count 100" "")
+    "-enable_reset -reset_at_nth_thread 2" "")
   torunonly(linux.clone-reset linux.clone linux/clone.c
-    "-enable_reset -reset_at_fragment_count 100" "")
+    "-enable_reset -reset_at_nth_thread 2" "")
   if (AARCHXX)
     # Test our diagnostic option -steal_reg_at_reset, which is also a stress
     # test of reset and register stealing.

@@ -108,9 +108,13 @@ reg_spill_tls_offs(reg_id_t reg)
     case SCRATCH_REG1: return TLS_REG1_SLOT;
     case SCRATCH_REG2: return TLS_REG2_SLOT;
     case SCRATCH_REG3: return TLS_REG3_SLOT;
-#ifdef AARCH64
+#ifdef AARCHXX
     case SCRATCH_REG4: return TLS_REG4_SLOT;
-    case SCRATCH_REG5: return TLS_REG5_SLOT;
+    case SCRATCH_REG5:
+        return TLS_REG5_SLOT;
+        /* We do not include the stolen reg slot b/c its load+stores are reversed
+         * and must be special-cased vs other spills.
+         */
 #endif
     }
     /* don't assert if another reg passed: used on random regs looking for spills */
@@ -3603,7 +3607,7 @@ dump_mcontext(priv_mcontext_t *context, file_t f, bool dump_xml)
                    "\n\t\tr12=\"" PFX "\"\n\t\tr13=\"" PFX "\""
                    "\n\t\tr14=\"" PFX "\"\n\t\tr15=\"" PFX "\""
 #    endif /* X64 */
-#elif defined(ARM)
+#elif defined(AARCHXX)
                    "\n\t\tr0=\"" PFX "\"\n\t\tr1=\"" PFX "\""
                    "\n\t\tr2=\"" PFX "\"\n\t\tr3=\"" PFX "\""
                    "\n\t\tr4=\"" PFX "\"\n\t\tr5=\"" PFX "\""
@@ -3631,7 +3635,7 @@ dump_mcontext(priv_mcontext_t *context, file_t f, bool dump_xml)
                    "\tr8  = " PFX "\n\tr9  = " PFX "\n\tr10 = " PFX "\n\tr11 = " PFX "\n"
                    "\tr12 = " PFX "\n\tr13 = " PFX "\n\tr14 = " PFX "\n\tr15 = " PFX "\n"
 #    endif /* X64 */
-#elif defined(ARM)
+#elif defined(AARCHXX)
                    "\tr0  = " PFX "\n\tr1  = " PFX "\n\tr2  = " PFX "\n\tr3  = " PFX "\n"
                    "\tr4  = " PFX "\n\tr5  = " PFX "\n\tr6  = " PFX "\n\tr7  = " PFX "\n"
                    "\tr8  = " PFX "\n\tr9  = " PFX "\n\tr10 = " PFX "\n\tr11 = " PFX "\n"
@@ -3699,7 +3703,7 @@ dump_mcontext(priv_mcontext_t *context, file_t f, bool dump_xml)
             }
         });
     }
-#elif defined(ARM)
+#elif defined(AARCHXX)
     {
         int i, j;
         /* XXX: should be proc_num_simd_saved(). */
