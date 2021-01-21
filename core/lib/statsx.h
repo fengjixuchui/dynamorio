@@ -98,6 +98,7 @@ STATS_DEF("SetContextThread w/o CONTEXT_CONTROL", num_app_setcontext_no_control)
 STATS_DEF("Re-takeovers after native", num_retakeover_after_native)
 #else
 RSTATS_DEF("Total signals delivered", num_signals)
+RSTATS_DEF("Total signals delivered to native threads", num_native_signals)
 RSTATS_DEF("Signals dropped", num_signals_dropped)
 RSTATS_DEF("Signals in coarse units delayed", num_signals_coarse_delayed)
 #endif
@@ -1239,7 +1240,9 @@ STATS_DEF("Clean Call analyzed", cleancall_analyzed)
 STATS_DEF("Clean Call inserted", cleancall_inserted)
 STATS_DEF("Clean Call inlined", cleancall_inlined)
 STATS_DEF("Clean Call [xyz]mm skipped", cleancall_simd_skipped)
+#ifdef X86
 STATS_DEF("Clean Call mask skipped", cleancall_opmask_skipped)
+#endif
 STATS_DEF("Clean Call aflags save skipped", cleancall_aflags_save_skipped)
 STATS_DEF("Clean Call aflags clear skipped", cleancall_aflags_clear_skipped)
 /* i#107 handle application using same segment register */

@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2010-2020 Google, Inc.  All rights reserved.
+ * Copyright (c) 2010-2021 Google, Inc.  All rights reserved.
  * Copyright (c) 2003-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -593,7 +593,12 @@ syscalls_init()
     /* Prime use_ki_syscall_routines() */
     use_ki_syscall_routines();
 
-    if (syscalls == windows_unknown_syscalls) {
+    if (syscalls == windows_unknown_syscalls ||
+        /* There are variations within the versions we have (e.g., i#4587), so our
+         * static arrays are not foolproof.  It is simpler to just get the ground truth
+         * for any moderately recent version.
+         */
+        get_os_version() >= WINDOWS_VERSION_10_1511) {
         /* i#1598: try to work on new, unsupported Windows versions */
         int i;
         app_pc wrapper;
@@ -602,26 +607,31 @@ syscalls_init()
             if (syscalls[i] == SYSCALL_NOT_PRESENT) /* presumably matches known ver */
                 continue;
             wrapper = (app_pc)d_r_get_proc_address(ntdllh, syscall_names[i]);
-            if (wrapper != NULL && !ALLOW_HOOKER(wrapper))
+            if (wrapper != NULL && !ALLOW_HOOKER(wrapper)) {
                 syscalls[i] = *((int *)((wrapper) + SYSNUM_OFFS));
+            }
             /* We ignore TestAlert complications: we don't call it anyway */
         }
+    } else {
+        /* Quick sanity check that the syscall numbers we care about are what's
+         * in our static array.  We still do our later full-decode sanity checks.
+         * This will always be true if we went through the wrapper loop above.
+         */
+        DOCHECK(1, {
+            int i;
+            ASSERT(ntdllh != NULL);
+            for (i = 0; i < SYS_MAX; i++) {
+                if (syscalls[i] == SYSCALL_NOT_PRESENT)
+                    continue;
+                /* note that this check allows a hooker so we'll need a
+                 * better way of determining syscall numbers
+                 */
+                app_pc wrapper = (app_pc)d_r_get_proc_address(ntdllh, syscall_names[i]);
+                CHECK_SYSNUM_AT((byte *)d_r_get_proc_address(ntdllh, syscall_names[i]),
+                                i);
+            }
+        });
     }
-    /* quick sanity check that the syscall numbers we care about are what's
-     * in our static array.  we still do our later full-decode sanity checks.
-     */
-    DOCHECK(1, {
-        int i;
-        ASSERT(ntdllh != NULL);
-        for (i = 0; i < SYS_MAX; i++) {
-            if (syscalls[i] == SYSCALL_NOT_PRESENT)
-                continue;
-            /* note that this check allows a hooker so we'll need a
-             * better way of determining syscall numbers
-             */
-            CHECK_SYSNUM_AT((byte *)d_r_get_proc_address(ntdllh, syscall_names[i]), i);
-        }
-    });
     return true;
 }
 
@@ -989,6 +999,66 @@ get_own_peb()
     }
     return own_peb;
 }
+
+/* Returns a 32-bit PEB for a 32-bit child and !X64 parent.
+ * Else returns a 64-bit PEB.
+ */
+uint64
+get_peb_maybe64(HANDLE h)
+{
+#ifdef X64
+    return (uint64)get_peb(h);
+#else
+    /* The WOW64 query below should work regardless of whether the kernel is 32-bit
+     * or the child is 32-bit or 64-bit.  But, it returns the 64-bit PEB, while we
+     * would prefer the 32-bit, so we first try get_peb().
+     */
+    PEB *peb32 = get_peb(h);
+    if (peb32 != NULL)
+        return (uint64)peb32;
+    PROCESS_BASIC_INFORMATION64 info;
+    NTSTATUS res = nt_wow64_query_info_process64(h, &info);
+    if (!NT_SUCCESS(res))
+        return 0;
+    else
+        return info.PebBaseAddress;
+#endif
+}
+
+#ifdef X64
+/* Returns the 32-bit PEB for a WOW64 process, given process and thread handles. */
+uint64
+get_peb32(HANDLE process, HANDLE thread)
+{
+    THREAD_BASIC_INFORMATION info;
+    NTSTATUS res = query_thread_info(thread, &info);
+    if (!NT_SUCCESS(res))
+        return 0;
+        /* Bizarrely, info.TebBaseAddress points 2 pages too low!  We do sanity
+         * checks to confirm we have a TEB by looking at its self pointer.
+         */
+#    define TEB32_QUERY_OFFS 0x2000
+    byte *teb32 = (byte *)info.TebBaseAddress;
+    uint ptr32;
+    size_t sz_read;
+    if (!nt_read_virtual_memory(process, teb32 + X86_SELF_TIB_OFFSET, &ptr32,
+                                sizeof(ptr32), &sz_read) ||
+        sz_read != sizeof(ptr32) || ptr32 != (uint64)teb32) {
+        teb32 += TEB32_QUERY_OFFS;
+        if (!nt_read_virtual_memory(process, teb32 + X86_SELF_TIB_OFFSET, &ptr32,
+                                    sizeof(ptr32), &sz_read) ||
+            sz_read != sizeof(ptr32) || ptr32 != (uint64)teb32) {
+            /* XXX: Also try peb64+0x1000?  That was true for older Windows version. */
+            return 0;
+        }
+    }
+    if (!nt_read_virtual_memory(process, teb32 + X86_PEB_TIB_OFFSET, &ptr32,
+                                sizeof(ptr32), &sz_read) ||
+        sz_read != sizeof(ptr32))
+        return 0;
+    return ptr32;
+}
+#endif
 
 /****************************************************************************/
 #ifndef NOT_DYNAMORIO_CORE
@@ -2013,6 +2083,21 @@ is_wow64_process(HANDLE h)
         return (is_wow64 != 0);
     }
     return self_is_wow64;
+}
+
+bool
+is_32bit_process(HANDLE h)
+{
+#ifdef X64
+    /* Kernel is definitely 64-bit. */
+    return is_wow64_process(h);
+#else
+    /* If kernel is 64-bit, ask about wow64; else, kernel is 32-bit, so true. */
+    if (is_wow64_process(NT_CURRENT_PROCESS))
+        return is_wow64_process(h);
+    else
+        return true;
+#endif
 }
 
 NTSTATUS

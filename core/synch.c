@@ -48,6 +48,7 @@ extern vm_area_vector_t *fcache_unit_areas; /* from fcache.c */
 
 static bool started_detach = false; /* set before synchall */
 bool doing_detach = false;          /* set after synchall */
+thread_id_t detacher_tid = INVALID_THREAD_ID;
 
 static void
 synch_thread_yield(void);
@@ -1014,9 +1015,9 @@ synch_with_thread(thread_id_t id, bool block, bool hold_initexit_lock,
                  * how to handle threads with low privilege handles */
                 /* For dr_api_exit, we may have missed a thread exit. */
                 ASSERT_CURIOSITY_ONCE(
-                    IF_APP_EXPORTS(dr_api_exit ||)(false &&
-                                                   "Thead synch unable to suspend target"
-                                                   " thread, case 2096?"));
+                    (trec->dcontext->currently_stopped IF_APP_EXPORTS(|| dr_api_exit)) &&
+                    "Thead synch unable to suspend target"
+                    " thread, case 2096?");
                 res = (TEST(THREAD_SYNCH_SUSPEND_FAILURE_IGNORE, flags)
                            ? THREAD_SYNCH_RESULT_SUCCESS
                            : THREAD_SYNCH_RESULT_SUSPEND_FAILURE);
@@ -2111,6 +2112,7 @@ detach_on_permanent_stack(bool internal, bool do_cleanup, dr_stats_t *drstats)
 
     ASSERT(!doing_detach);
     doing_detach = true;
+    detacher_tid = d_r_get_thread_id();
 
 #ifdef HOT_PATCHING_INTERFACE
     /* In hotp_only mode, we must remove patches when detaching; we don't want

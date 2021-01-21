@@ -1712,7 +1712,6 @@ opnd_size_in_bytes(opnd_size_t size)
     case OPSZ_6_irex10_short4: /* default size */
     case OPSZ_6: return 6;
     case OPSZ_8_of_16:
-    case OPSZ_8_of_16_vex32:
     case OPSZ_half_16_vex32:
     case OPSZ_8_short2:
     case OPSZ_8_short4:
@@ -2119,9 +2118,30 @@ opnd_compute_address_priv(opnd_t opnd, priv_mcontext_t *mc)
         ptr_int_t scale = opnd_get_scale(opnd);
         scaled_index = scale * reg_get_value_priv(index, mc);
 #elif defined(AARCH64)
+        bool scaled = false;
+        uint amount = 0;
+        dr_extend_type_t type = opnd_get_index_extend(opnd, &scaled, &amount);
         reg_t index_val = reg_get_value_priv(index, mc);
-        /* FIXME i#1569: Compute extension and shift. */
-        scaled_index = index_val;
+        reg_t extended = 0;
+        uint msb = 0;
+        switch (type) {
+        default: CLIENT_ASSERT(false, "Unsupported extend type"); return NULL;
+        case DR_EXTEND_UXTW: extended = (index_val << (63u - 31u)) >> (63u - 31u); break;
+        case DR_EXTEND_SXTW:
+            extended = (index_val << (63u - 31u)) >> (63u - 31u);
+            msb = extended >> 31u;
+            if (msb == 1) {
+                extended = ((~0ull) << 32u) | extended;
+            }
+            break;
+        case DR_EXTEND_UXTX:
+        case DR_EXTEND_SXTX: extended = index_val; break;
+        }
+        if (scaled) {
+            scaled_index = extended << amount;
+        } else {
+            scaled_index = extended;
+        }
 #elif defined(ARM)
         uint amount;
         dr_shift_type_t type = opnd_get_index_shift(opnd, &amount);

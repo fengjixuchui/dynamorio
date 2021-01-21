@@ -466,6 +466,15 @@
  * \param dc  The void * dcontext used to allocate memory for the instr_t.
  */
 #define XINST_CREATE_nop(dc) INSTR_CREATE_nop(dc)
+
+/**
+ * This platform-independent macro creates an instr_t for an indirect call instr
+ * through a register.
+ * \param dc  The void * dcontext used to allocate memory for the instr_t.
+ * \param r   The opnd_t explicit source operand for the instruction. This should
+ * be a reg_id_t operand with the address of the subroutine.
+ */
+#define XINST_CREATE_call_reg(dc, r) INSTR_CREATE_call_ind(dc, r)
 /* @} */ /* end doxygen group */
 
 /****************************************************************************
@@ -3491,6 +3500,8 @@
     instr_create_1dst_3src((dc), OP_vpermilpd, (d), (k), (s1), (s2))
 #define INSTR_CREATE_vpermps_mask(dc, d, k, s1, s2) \
     instr_create_1dst_3src((dc), OP_vpermps, (d), (k), (s1), (s2))
+#define INSTR_CREATE_vpermb_mask(dc, d, k, s1, s2) \
+    instr_create_1dst_3src((dc), OP_vpermb, (d), (k), (s1), (s2))
 #define INSTR_CREATE_vpermd_mask(dc, d, k, s1, s2) \
     instr_create_1dst_3src((dc), OP_vpermd, (d), (k), (s1), (s2))
 #define INSTR_CREATE_vpermw_mask(dc, d, k, s1, s2) \
@@ -3657,6 +3668,12 @@
     instr_create_1dst_3src((dc), OP_vpslld, (d), (k), (s1), (s2))
 #define INSTR_CREATE_vpsllq_mask(dc, d, k, s1, s2) \
     instr_create_1dst_3src((dc), OP_vpsllq, (d), (k), (s1), (s2))
+#define INSTR_CREATE_vpsllvw_mask(dc, d, k, s1, s2) \
+    instr_create_1dst_3src((dc), OP_vpsllvw, (d), (k), (s1), (s2))
+#define INSTR_CREATE_vpsllvd_mask(dc, d, k, s1, s2) \
+    instr_create_1dst_3src((dc), OP_vpsllvd, (d), (k), (s1), (s2))
+#define INSTR_CREATE_vpsllvq_mask(dc, d, k, s1, s2) \
+    instr_create_1dst_3src((dc), OP_vpsllvq, (d), (k), (s1), (s2))
 #define INSTR_CREATE_vrcp14ss_mask(dc, d, k, s1, s2) \
     instr_create_1dst_3src((dc), OP_vrcp14ss, (d), (k), (s1), (s2))
 #define INSTR_CREATE_vrcp14sd_mask(dc, d, k, s1, s2) \

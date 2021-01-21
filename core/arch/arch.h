@@ -408,8 +408,10 @@ typedef struct _clean_call_info_t {
     bool skip_clear_flags;
     int num_simd_skip;
     bool simd_skip[MCXT_NUM_SIMD_SLOTS];
+#ifdef X86
     int num_opmask_skip;
     bool opmask_skip[MCXT_NUM_OPMASK_SLOTS];
+#endif
     uint num_regs_skip;
     bool reg_skip[DR_NUM_GPR_REGS];
     bool preserve_mcontext; /* even if skip reg save, preserve mcontext shape */
@@ -720,8 +722,11 @@ mangle_writes_thread_register(dcontext_t *dcontext, instrlist_t *ilist, instr_t 
 
 /* offsets within local_state_t used for specific scratch purposes */
 enum {
-    /* ok for this guy to overlap w/ others since he is pre-cache */
-    FCACHE_ENTER_TARGET_SLOT = TLS_REG0_SLOT,
+    /* ok for this guy to overlap w/ others since he is pre-cache.
+     * Also, note that we cannot use either TLS_REG0_SLOT or
+     * TLS_REG1_SLOT for this because those are used in fragment prefix.
+     */
+    FCACHE_ENTER_TARGET_SLOT = TLS_REG2_SLOT,
     /* FIXME: put register name in each enum name to avoid conflicts
      * when mixed with raw slot names?
      */
@@ -754,16 +759,7 @@ enum {
 #ifdef HASHTABLE_STATISTICS
     HTABLE_STATS_SPILL_SLOT = TLS_HTABLE_STATS_SLOT,
 #endif
-#ifdef AARCH64
-    /* Every fragment has the prefix ldr x0, [x(stolen), #8]. */
-    ENTRY_PC_SPILL_SLOT = TLS_REG1_SLOT,
-#endif
 };
-
-#ifdef AARCH64
-/* Every fragment has the prefix ldr x0, [x(stolen), #8]. */
-#    define ENTRY_PC_REG DR_REG_X0
-#endif
 
 /* A simple linker to give us indirection for patching after relocating structures */
 typedef struct patch_entry_t {
@@ -1152,11 +1148,12 @@ bool
 exit_cti_reaches_target(dcontext_t *dcontext, fragment_t *f, linkstub_t *l,
                         cache_pc target_pc);
 void
-patch_stub(fragment_t *f, cache_pc stub_pc, cache_pc target_pc, bool hot_patch);
+patch_stub(fragment_t *f, cache_pc stub_pc, cache_pc target_pc, cache_pc target_prefix_pc,
+           bool hot_patch);
 bool
-stub_is_patched(fragment_t *f, cache_pc stub_pc);
+stub_is_patched(dcontext_t *dcontext, fragment_t *f, cache_pc stub_pc);
 void
-unpatch_stub(fragment_t *f, cache_pc stub_pc, bool hot_patch);
+unpatch_stub(dcontext_t *dcontext, fragment_t *f, cache_pc stub_pc, bool hot_patch);
 
 byte *
 emit_inline_ibl_stub(dcontext_t *dcontext, byte *pc, ibl_code_t *ibl_code,
@@ -1447,20 +1444,22 @@ typedef struct _slot_t {
 
 /* data structure of clean call callee information. */
 typedef struct _callee_info_t {
-    bool bailout;        /* if we bail out on function analysis */
-    uint num_args;       /* number of args that will passed in */
-    int num_instrs;      /* total number of instructions of a function */
-    app_pc start;        /* entry point of a function  */
-    app_pc bwd_tgt;      /* earliest backward branch target */
-    app_pc fwd_tgt;      /* last forward branch target */
-    int num_simd_used;   /* number of SIMD registers (xmms) used by callee */
-    int num_opmask_used; /* number of mask registers used by callee */
+    bool bailout;      /* if we bail out on function analysis */
+    uint num_args;     /* number of args that will passed in */
+    int num_instrs;    /* total number of instructions of a function */
+    app_pc start;      /* entry point of a function  */
+    app_pc bwd_tgt;    /* earliest backward branch target */
+    app_pc fwd_tgt;    /* last forward branch target */
+    int num_simd_used; /* number of SIMD registers (xmms) used by callee */
     /* SIMD ([xyz]mm) registers usage. Part of the array might be left
      * uninitialized if proc_num_simd_registers() < MCXT_NUM_SIMD_SLOTS.
      */
     bool simd_used[MCXT_NUM_SIMD_SLOTS];
+#ifdef X86
+    int num_opmask_used; /* number of mask registers used by callee */
     /* AVX-512 mask register usage. */
     bool opmask_used[MCXT_NUM_OPMASK_SLOTS];
+#endif
     bool reg_used[DR_NUM_GPR_REGS];         /* general purpose registers usage */
     int num_callee_save_regs;               /* number of regs callee saved */
     bool callee_save_regs[DR_NUM_GPR_REGS]; /* callee-save registers */

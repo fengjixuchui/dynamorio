@@ -1,5 +1,5 @@
 # **********************************************************
-# Copyright (c) 2010-2020 Google, Inc.    All rights reserved.
+# Copyright (c) 2010-2021 Google, Inc.    All rights reserved.
 # Copyright (c) 2009-2010 VMware, Inc.    All rights reserved.
 # Copyright (c) 2016      ARM Limited.    All rights reserved.
 # **********************************************************
@@ -47,9 +47,10 @@
 #   and optionally submit to dashboard.  Use w/o submit as "make runregression".
 
 # We use target_include_directories() which was added in 2.8.11
-cmake_minimum_required(VERSION 2.8.11)
+cmake_minimum_required(VERSION 3.7)
 
 include(../../make/policies.cmake NO_POLICY_SCOPE)
+include(../runsuite_common_pre.cmake) # For _DR_set_VS_bitwidth_env_vars.
 
 option(TEST_LONG "run long set of tests")
 option(SKIP_FLAKY_TESTS "do not run tests named *_FLAKY")
@@ -231,7 +232,7 @@ endif (CALLPROF AND TEST_SUITE)
 # This assumes that 32-bit Windows is not as important these days.
 # We remove some of the less differentiated tests.
 # We still run the full set for merges to master.
-if (WIN32 AND NOT X64 AND DEFINED ENV{APPVEYOR_PULL_REQUEST_NUMBER})
+if (WIN32 AND NOT X64 AND "$ENV{CI_TRIGGER}" STREQUAL "pull_request")
   set(SKIP_LESS_DIFFERENTIATED_TESTS_FOR_PULL_REQUEST ON)
 else ()
   set(SKIP_LESS_DIFFERENTIATED_TESTS_FOR_PULL_REQUEST OFF)
@@ -455,7 +456,7 @@ target_link_libraries(tools drlibc)
 
 if (WIN32)
   set_source_files_properties(${PROJECT_SOURCE_DIR}/core/win32/resources.rc
-    PROPERTIES COMPILE_FLAGS "-DRC_IS_TEST")
+    PROPERTIES COMPILE_DEFINITIONS "RC_IS_TEST")
 endif (WIN32)
 
 function (set_cflags source)
@@ -577,6 +578,10 @@ function(add_exe test source)
     # it hard to use other DR builds w/ these apps
     SKIP_BUILD_RPATH ON)
   if (UNIX)
+    # Older CMake would add this for us, but no longer.  We want global syms
+    # in .dynsym for all our executables, so our clients can use dr_get_proc_address()
+    # to find them.
+    append_link_flags(${test} "-rdynamic")
     # This is kind of a hack: perhaps we should add a flag for whether to use libs.
     if (NOT ${source} MATCHES "\\.asm$" AND NOT ${test} MATCHES "static"
         AND NOT ${test} MATCHES "drdecode")
@@ -732,26 +737,30 @@ function(configure_app_api_build_flags test decoder use_static_DR)
     configure_DynamoRIO_standalone(${test})
     set(extra_flags "-DSTANDALONE")
   endif ()
-  # append to properties set by configure_DynamoRIO_standalone
+  # Since we're including configure.h we do not want any default defines.
+  get_target_property(prop_defs ${test} COMPILE_DEFINITIONS)
+  if (NOT prop_defs)
+    set(prop_defs "")
+  endif ()
+  string(REGEX REPLACE "X64" "" prop_defs "${prop_defs}")
+  string(REGEX REPLACE "LINUX" "" prop_defs "${prop_defs}")
+  string(REGEX REPLACE "WINDOWS" "" prop_defs "${prop_defs}")
+  string(REGEX REPLACE "MACOS" "" prop_defs "${prop_defs}")
+  string(REGEX REPLACE "CLANG" "" prop_defs "${prop_defs}")
+  string(REGEX REPLACE "ANDROID" "" prop_defs "${prop_defs}")
+  string(REGEX REPLACE "DR_APP_EXPORTS" "" prop_defs "${prop_defs}")
+  string(REGEX REPLACE "DR_HOST_ARM" "" prop_defs "${prop_defs}")
+  string(REGEX REPLACE "DR_HOST_AARCH64" "" prop_defs "${prop_defs}")
+  string(REGEX REPLACE "DR_HOST_X86" "" prop_defs "${prop_defs}")
+  string(REGEX REPLACE "DR_HOST_X64" "" prop_defs "${prop_defs}")
+  string(REGEX REPLACE "DR_HOST_NOT_TARGET" "" prop_defs "${prop_defs}")
+  # Append to properties set by configure_DynamoRIO_standalone.
   get_target_property(prop_cflags ${test} COMPILE_FLAGS)
   if (NOT prop_cflags)
     set(prop_cflags "")
   endif ()
   set(prop_cflags "${prop_cflags} ${extra_flags}")
   set(prop_cflags "${prop_cflags} -DUSE_DYNAMO")
-  # since we're including configure.h we do not want any default defines
-  string(REGEX REPLACE "-DX64" "" prop_cflags "${prop_cflags}")
-  string(REGEX REPLACE "-DLINUX" "" prop_cflags "${prop_cflags}")
-  string(REGEX REPLACE "-DWINDOWS" "" prop_cflags "${prop_cflags}")
-  string(REGEX REPLACE "-DMACOS" "" prop_cflags "${prop_cflags}")
-  string(REGEX REPLACE "-DCLANG" "" prop_cflags "${prop_cflags}")
-  string(REGEX REPLACE "-DANDROID" "" prop_cflags "${prop_cflags}")
-  string(REGEX REPLACE "-DDR_APP_EXPORTS" "" prop_cflags "${prop_cflags}")
-  string(REGEX REPLACE "-DDR_HOST_ARM" "" prop_cflags "${prop_cflags}")
-  string(REGEX REPLACE "-DDR_HOST_AARCH64" "" prop_cflags "${prop_cflags}")
-  string(REGEX REPLACE "-DDR_HOST_X86" "" prop_cflags "${prop_cflags}")
-  string(REGEX REPLACE "-DDR_HOST_X64" "" prop_cflags "${prop_cflags}")
-  string(REGEX REPLACE "-DDR_HOST_NOT_TARGET" "" prop_cflags "${prop_cflags}")
   # FIXME: apparently moving cflags to a target property makes it show up
   # in the cpp run for asm targets, where it doesn't if in global var.
   # This causes compilation failure.  Removing -g3 manually as a workaround.
@@ -759,6 +768,7 @@ function(configure_app_api_build_flags test decoder use_static_DR)
   get_target_property(prop_lflags ${test} LINK_FLAGS)
   set_target_properties(${test} PROPERTIES
     COMPILE_FLAGS "${prop_cflags}"
+    COMPILE_DEFINITIONS "${prop_defs}"
     LINK_FLAGS "${pre_lflags} ${prop_lflags}")
 endfunction (configure_app_api_build_flags)
 
@@ -1692,23 +1702,25 @@ endfunction(run2testname)
 function(is_test_enabled_by_name output name regex)
   set(enabled OFF)
   if (NOT SKIP_FLAKY_TESTS OR NOT "${name}" MATCHES "_FLAKY")
-    if (NOT regex OR "${name}" MATCHES "${regex}")
-      if (SKIP_LESS_DIFFERENTIATED_TESTS_FOR_PULL_REQUEST AND
-          # See above: for particular builds we skip some of the similar tests from
-          # some of the test groups.
-          (("${name}" MATCHES "tool.drcache" AND
-            NOT "${name}" MATCHES "(simple|invariants|burst_malloc|burst_replaceall)") OR
-          ("${name}" MATCHES "tool.drcpusim" AND
-            NOT "${name}" MATCHES "Pentium3") OR
-          ("${name}" MATCHES "tool.[^d]" AND
-            NOT "${name}" MATCHES "(basic_counts|reuse_offline)") OR
-          # instrcalls is the slowest of the samples.
-          "${name}" MATCHES "sample.instrcalls" OR
-          ("${name}" MATCHES "client.annotation-" AND
-            NOT "${name}" MATCHES "(-opt|tiny-bb)")))
-        set(enabled OFF)
-      else ()
-        set(enabled ON)
+    if (TEST_LONG OR NOT "${name}" MATCHES "_LONG")
+      if (NOT regex OR "${name}" MATCHES "${regex}")
+        if (SKIP_LESS_DIFFERENTIATED_TESTS_FOR_PULL_REQUEST AND
+            # See above: for particular builds we skip some of the similar tests from
+            # some of the test groups.
+            (("${name}" MATCHES "tool.drcache" AND
+              NOT "${name}" MATCHES "(simple|invariants|burst_malloc|burst_replaceall)") OR
+            ("${name}" MATCHES "tool.drcpusim" AND
+              NOT "${name}" MATCHES "Pentium3") OR
+            ("${name}" MATCHES "tool.[^d]" AND
+              NOT "${name}" MATCHES "(basic_counts|reuse_offline)") OR
+            # instrcalls is the slowest of the samples.
+            "${name}" MATCHES "sample.instrcalls" OR
+            ("${name}" MATCHES "client.annotation-" AND
+              NOT "${name}" MATCHES "(-opt|tiny-bb)")))
+          set(enabled OFF)
+        else ()
+          set(enabled ON)
+        endif ()
       endif ()
     endif ()
   endif ()
@@ -1851,6 +1863,7 @@ if (CLIENT_INTERFACE)
         ${CMAKE_CURRENT_SOURCE_DIR}/api/ir_${sfx}_3args_avx512_vex.h
         ${CMAKE_CURRENT_SOURCE_DIR}/api/ir_${sfx}_4args_avx512_evex_mask_A.h
         ${CMAKE_CURRENT_SOURCE_DIR}/api/ir_${sfx}_4args_avx512_evex_mask_B.h
+        ${CMAKE_CURRENT_SOURCE_DIR}/api/ir_${sfx}_4args_avx512_evex_mask_C.h
         ${CMAKE_CURRENT_SOURCE_DIR}/api/ir_${sfx}_5args_avx512_evex_mask.h)
       append_property_string(SOURCE api/ir_${sfx}.c OBJECT_DEPENDS "${api_ir_headers}")
     endif ()
@@ -2405,7 +2418,8 @@ if (CLIENT_INTERFACE)
       tobuild_ci(client.events_cpp client-interface/events_cpp.cpp
         "" "${trace_arg}" "${events_appdll_path}")
       tobuild_ci(client.nudge_test client-interface/nudge_test.runall "" "" "")
-      tobuild_ci(client.timer client-interface/timer.c "" "" "")
+      # We disable traces to get bb prefixes for testing i#4669.
+      tobuild_ci(client.timer client-interface/timer.c "" "-disable_traces" "")
       if (X64)
         tobuild_ci(client.mangle_suspend client-interface/mangle_suspend.c ""
           "-vm_base 0x100000000 -no_vm_base_near_app" "")
@@ -2542,6 +2556,15 @@ if (CLIENT_INTERFACE)
   set(client.option_parse_client_ops_islist ON)
 
   tobuild_ci(client.thread_exit_xl8 client-interface/thread_exit_xl8.c "" "" "")
+
+  if (UNIX) # The test uses signals.
+    tobuild_ci(client.gonative client-interface/gonative.c "" "" "")
+    link_with_pthread(client.gonative)
+    # Configure for dr_app_running_under_dynamorio().
+    configure_app_api_build_flags(client.gonative OFF OFF)
+    add_dependencies(client.gonative api_headers)
+    set_target_properties(client.gonative PROPERTIES SKIP_BUILD_RPATH OFF)
+  endif ()
 
   tobuild_ci(client.drcontainers-test client-interface/drcontainers-test.c "" "" "")
   use_DynamoRIO_extension(client.drcontainers-test.dll drcontainers)
@@ -2829,6 +2852,12 @@ if (CLIENT_INTERFACE)
       set(api.detach_state_runavx 1)
     endif ()
   endif ()
+  if (UNIX)
+    if (X64) # TODO i#4664: Fix crash in vsyscall hook under native threads.
+      tobuild_api(api.detach_signal api/detach_signal.cpp "" "" OFF OFF)
+      link_with_pthread(api.detach_signal)
+    endif ()
+  endif ()
   if (NOT WIN32) # XXX i#2611: fix for Windows
     if (X64)
       set(detach_spawn_name api.detach_spawn)
@@ -2860,7 +2889,7 @@ if (CLIENT_INTERFACE)
       set(decenc.drdecode_decenc_x86_runcmp "${CMAKE_CURRENT_SOURCE_DIR}/runcmp.cmake")
     endif ()
   endif ()
-  if (X86) # Generated code is x86-specific.
+  if (X86 OR AARCH64) # Generated code is x86- or AArch64-specific.
     set(checklevel "")
     if (DEBUG)
       # This tests indirect branches between blocks.
@@ -2868,8 +2897,22 @@ if (CLIENT_INTERFACE)
       # which makes building 150K bbs very slow.
       set(checklevel "-checklevel 0")
     endif ()
-    tobuild_api(api.ibl-stress api/ibl-stress.c
-      "-disable_traces -shared_bb_ibt_tables ${checklevel}" "" OFF OFF)
+    # TODO i#4665: Fix crash without the -shared_ibt_table_bb_init value.
+    if (AARCH64)
+      tobuild_api(api.ibl-stress api/ibl-stress.c
+        "-disable_traces -shared_bb_ibt_tables -shared_ibt_table_bb_init 16 ${checklevel}" "" OFF OFF)
+
+      tobuild_api(api.ibl-stress-aarch64-far-link_LONG api/ibl-stress.c
+        "-disable_traces -shared_bb_ibt_tables -shared_ibt_table_bb_init 20 ${checklevel}" "" OFF OFF)
+      append_property_string(TARGET api.ibl-stress-aarch64-far-link_LONG COMPILE_FLAGS
+        "-DTEST_FAR_LINK_AARCH64")
+      set(api.ibl-stress-aarch64-far-link_LONG_timeout 900)
+      use_DynamoRIO_extension(api.ibl-stress-aarch64-far-link_LONG drcontainers)
+      link_with_pthread(api.ibl-stress-aarch64-far-link_LONG)
+    else ()
+      tobuild_api(api.ibl-stress api/ibl-stress.c
+        "-disable_traces -shared_bb_ibt_tables ${checklevel}" "" OFF OFF)
+    endif ()
     use_DynamoRIO_extension(api.ibl-stress drcontainers)
     link_with_pthread(api.ibl-stress)
     if (WIN32)
@@ -4157,16 +4200,16 @@ if (UNIX)
     tobuild(linux.rseq linux/rseq.c)
     # Test the other sections.  Unfortunately we need a separate binary for each.
     tobuild(linux.rseq_table linux/rseq.c)
-    append_property_string(TARGET linux.rseq_table
-      COMPILE_FLAGS "-DRSEQ_TEST_USE_OLD_SECTION_NAME")
+    append_property_list(TARGET linux.rseq_table
+      COMPILE_DEFINITIONS "RSEQ_TEST_USE_OLD_SECTION_NAME")
     tobuild(linux.rseq_noarray linux/rseq.c)
-    append_property_string(TARGET linux.rseq_noarray
-      COMPILE_FLAGS "-DRSEQ_TEST_USE_NO_ARRAY")
+    append_property_list(TARGET linux.rseq_noarray
+      COMPILE_DEFINITIONS "RSEQ_TEST_USE_NO_ARRAY")
     # Test attaching, which has a separate lazy rseq check.
     # We build with static DR to also test client interactions.
     tobuild_api(api.rseq linux/rseq.c "" "" OFF ON)
     link_with_pthread(api.rseq)
-    append_property_string(TARGET api.rseq COMPILE_FLAGS "-DRSEQ_TEST_ATTACH")
+    append_property_list(TARGET api.rseq COMPILE_DEFINITIONS "RSEQ_TEST_ATTACH")
     set(api.rseq_expectbase rseq_client)
     # Test non-compliant code with our workaround flag.
     tobuild_ops(linux.rseq_disable linux/rseq_disable.c "-disable_rseq" "")
@@ -4350,6 +4393,78 @@ else (UNIX)
   #tobuild_runall(runall.processchain runall/processchain.runall "")
 
   tobuild_csharp(win32.dotnet win32/dotnet.cs)
+
+  # Cross-arch injection tests.
+  if (X86)
+    set(xarch_dir ${CMAKE_CURRENT_BINARY_DIR}/xarch)
+    set(test_bindir suite/tests/bin)
+    file(MAKE_DIRECTORY ${xarch_dir})
+    # Unfortunately, while CMake 3.13+ supports create_symlink on Windows, that
+    # only works if the user has the right privileges, so we can't set up
+    # lib dir symlinks like we do for unix cross-arch build-and-test.
+    # We have to make a copy in order to have parallel dirs with the two bitwidths.
+    file(MAKE_DIRECTORY "${xarch_dir}/${INSTALL_LIB}")
+    set(xarch_copy_stamp "${CMAKE_CURRENT_BINARY_DIR}/xarch_copy.stamp")
+    add_custom_command(OUTPUT "${xarch_copy_stamp}"
+      DEPENDS dynamorio
+      COMMAND ${CMAKE_COMMAND} ARGS
+      -E touch "${xarch_copy_stamp}"
+      COMMAND ${CMAKE_COMMAND} ARGS
+      -E copy "${MAIN_LIBRARY_OUTPUT_DIRECTORY}/dynamorio.dll"
+      "${xarch_dir}/${INSTALL_LIB}/dynamorio.dll"
+      VERBATIM)
+    add_custom_target(xarch_copy DEPENDS "${xarch_copy_stamp}")
+    add_dependencies(drcopy xarch_copy)
+    # We use a client that takes some options and prints something at
+    # init and at exit to test cross-arch injection with clients.
+    get_target_path_for_execution(cur_client_path client.large_options.dll
+      "${location_suffix}")
+    set(xarch_client_path ${xarch_dir}/${test_bindir}/client.large_options.dll.dll)
+    get_target_path_for_execution(drrun_path drrun "${location_suffix}")
+    if (X64)
+      set(client32_path ${xarch_client_path})
+      set(client64_path ${cur_client_path})
+      set(other_is64 OFF)
+    else ()
+      set(client32_path ${cur_client_path})
+      set(client64_path ${xarch_client_path})
+      set(other_is64 ON)
+    endif ()
+    if (DEBUG)
+      set(config_type -DDEBUG=ON)
+    else ()
+      set(config_type "")
+    endif ()
+    # I abandoned --build-generator-platform (3.13+ only; VS gen only) or explicitly
+    # setting the full generator (fails w/ Ninja) and went with the env var scheme we
+    # use in our test suite.
+    _DR_set_VS_bitwidth_env_vars(${other_is64} env_names)
+    foreach (env ${env_names})
+      # Escape internal ; since this goes into a CMake "var=value;..." list.
+      string(REPLACE ";" "\\;" value "${${env}_env_value}")
+      list(APPEND test_env_pairs "${env}=${value}")
+    endforeach ()
+    add_test(win32.xarch ${CMAKE_CTEST_COMMAND} -V
+      --build-and-test ${PROJECT_SOURCE_DIR} ${xarch_dir}
+      --build-generator ${CMAKE_GENERATOR}
+      --build-target dynamorio
+      --build-target common.eflags
+      --build-target client.large_options.dll
+      --build-noclean # Else it tries to clean between each target!
+      --build-makeprogram ${CMAKE_MAKE_PROGRAM}
+      --build-options ${config_type} -DBUILD_TESTS=ON -DBUILD_DOCS=OFF
+      -DBUILD_SAMPLES=OFF -DBUILD_EXT=OFF -DBUILD_CLIENTS=OFF
+      --test-command ${drrun_path} -dr_home ${xarch_dir} ${dr_test_ops}
+      -c32 ${client32_path} -paramA foo -paramB bar --
+      -c64 ${client64_path} -paramA foo -paramB bar --
+      ${MAIN_RUNTIME_OUTPUT_DIRECTORY}/create_process.exe
+      ${xarch_dir}/${test_bindir}/common.eflags.exe)
+    file(READ win32/xarch.templatex expect)
+    set_tests_properties(win32.xarch PROPERTIES ENVIRONMENT
+      "${test_env_pairs}"
+      # We start with .* for all the config and build stuff.
+      PASS_REGULAR_EXPRESSION ".*${expect}[ \n]*$")
+  endif (X86)
 
   # Cross-arch mixedmode/x86_to_x64 test: can only be done via a suite of tests that
   # build both 32-bit and 64-bit.  We have 32-bit just build, and
