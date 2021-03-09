@@ -334,6 +334,24 @@ OPTION_NAME(bool, profile_pcs, "prof_pcs", "pc-sampling profiling")
 /* XXX i#1114: enable by default when the implementation is complete */
 OPTION_DEFAULT(bool, opt_jit, false, "optimize translation of dynamically generated code")
 
+#ifdef UNIX
+OPTION_COMMAND(pathstring_t, xarch_root, EMPTY_STRING, "xarch_root",
+               {
+                   /* Running under QEMU requires timing out and then leaving
+                    * the failed-takeover QEMU thread native, so we bundle that
+                    * here for convenience.  We target the common use case of a
+                    * small app, for which we want a small timeout.
+                    */
+                   if (options->xarch_root[0] != '\0') {
+                       options->unsafe_ignore_takeover_timeout = true;
+                       options->takeover_timeout_ms = 400;
+                   }
+               },
+               "QEMU support: prefix to add to opened files for emulation; also sets "
+               "-unsafe_ignore_takeover_timeout and -takeover_timeout_ms 400",
+               STATIC, OP_PCACHE_NOP)
+#endif
+
 #ifdef EXPOSE_INTERNAL_OPTIONS
 #    ifdef PROFILE_RDTSC
 OPTION_NAME_INTERNAL(bool, profile_times, "prof_times", "profiling via measuring time")
@@ -3200,6 +3218,13 @@ OPTION(bool, multi_thread_exit,
        "do not guarantee that process exit event callback is invoked single-threaded")
 OPTION(bool, skip_thread_exit_at_exit, "skip thread exit events at process exit")
 #endif
+OPTION(bool, unsafe_ignore_takeover_timeout,
+       "ignore timeouts trying to take over one or more threads when initializing, "
+       "leaving those threads native, which is potentially unsafe")
+OPTION_DEFAULT(uint, takeover_timeout_ms, 30000,
+               "timeout in milliseconds for each thread when taking over at "
+               "initialization/attach.  Reaching a timeout is fatal, unless "
+               "-unsafe_ignore_takeover_timeout is set.")
 
 #ifdef EXPOSE_INTERNAL_OPTIONS
 OPTION_NAME(bool, optimize, " synthethic", "set if ANY opts are on")

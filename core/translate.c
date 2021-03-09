@@ -288,7 +288,7 @@ translate_walk_track_pre_instr(dcontext_t *tdcontext, instr_t *inst,
                     for (curr = inst; curr != NULL; curr = instr_get_next(curr)) {
                         spill_or_restore = instr_is_DR_reg_spill_or_restore(
                             tdcontext, curr, &spill_tls, &spill, &reg, NULL);
-                        if (spill_or_restore)
+                        if (spill_or_restore && r == reg - REG_START_SPILL)
                             break;
                     }
                     ASSERT(spill_or_restore && r == reg - REG_START_SPILL && !spill &&
@@ -598,34 +598,6 @@ translate_walk_restore(dcontext_t *tdcontext, translate_walk_t *walk, instr_t *i
                 instr_free(tdcontext, &instr);
             });
         });
-    } else if (translate_pc != walk->translation) {
-        /* When we walk we update only each instr we pass.  If we're
-         * now sitting at the instr AFTER the mangle region, we do
-         * NOT want to adjust xsp, since we're not translating to
-         * before that instr.  We should not have any outstanding spills.
-         */
-        LOG(THREAD_GET, LOG_INTERP, 2,
-            "\ttranslation " PFX " is post-walk " PFX " so not fixing xsp\n",
-            translate_pc, walk->translation);
-        DOCHECK(1, {
-            /* Assumes all spills are matched by the same number of restores. This
-             * assumption may not hold for more complex mangling.
-             */
-            for (r = 0; r < REG_SPILL_NUM; r++)
-                ASSERT(walk->reg_spill_offs[r] ==
-                       UINT_MAX
-                           /* Register X0 is used for branches on AArch64.
-                            * See mangle_cbr_stolen_reg.
-                            */
-                           IF_AARCH64(|| r + REG_START_SPILL == DR_REG_X0)
-                       /* The special stolen register mangling from
-                        * mangle_syscall_arch() for a non-restartable syscall ends
-                        * up here due to the nop having a xl8 post-syscall.
-                        * We do need to restore that spill.
-                        */
-                       IF_AARCHXX(|| r + REG_START_SPILL == dr_reg_stolen));
-        });
-        return;
     }
 
     /* PR 263407: restore register values that are currently in spill slots
@@ -650,15 +622,29 @@ translate_walk_restore(dcontext_t *tdcontext, translate_walk_t *walk, instr_t *i
             reg_set_value_priv(reg, walk->mc, value);
         }
     }
-    /* PR 267260: Restore stack-adjust mangling of ctis.
-     * FIXME: we do NOT undo writes to the stack, so we're not completely
-     * transparent.  If we ever do restore memory, we'll want to pass in
-     * the restore_memory param.
-     */
-    if (walk->xsp_adjust != 0) {
-        walk->mc->xsp -= walk->xsp_adjust; /* negate to undo */
-        LOG(THREAD_GET, LOG_INTERP, 2, "\tundoing push/pop by %d: xsp now " PFX "\n",
-            walk->xsp_adjust, walk->mc->xsp);
+
+    if (translate_pc !=
+        walk->translation IF_X86(
+            &&!translate_walk_enters_mangling_epilogue(tdcontext, inst, walk))) {
+        /* When we walk we update only each instr we pass.  If we're
+         * now sitting at the instr AFTER the mangle region, we do
+         * NOT want to adjust xsp, since we're not translating to
+         * before that instr.  We should not have any outstanding spills.
+         */
+        LOG(THREAD_GET, LOG_INTERP, 2,
+            "\ttranslation " PFX " is post-walk " PFX " so not fixing xsp\n",
+            translate_pc, walk->translation);
+    } else {
+        /* PR 267260: Restore stack-adjust mangling of ctis.
+         * FIXME: we do NOT undo writes to the stack, so we're not completely
+         * transparent.  If we ever do restore memory, we'll want to pass in
+         * the restore_memory param.
+         */
+        if (walk->xsp_adjust != 0) {
+            walk->mc->xsp -= walk->xsp_adjust; /* negate to undo */
+            LOG(THREAD_GET, LOG_INTERP, 2, "\tundoing push/pop by %d: xsp now " PFX "\n",
+                walk->xsp_adjust, walk->mc->xsp);
+        }
     }
 }
 
@@ -945,6 +931,15 @@ recreate_app_state_from_ilist(dcontext_t *tdcontext, instrlist_t *ilist, byte *s
 
         LOG(THREAD_GET, LOG_INTERP, 5, "cache pc " PFX " vs " PFX "\n", cpc,
             target_cache);
+        if (cpc + len > target_cache && instr_is_cti_short_rewrite(inst, cpc)) {
+            /* The target is inside the short-cti bundle.  Everything should be fine:
+             * there are no state changes inside.
+             */
+            LOG(THREAD_GET, LOG_INTERP, 3,
+                "recreate_app -- target is inside short-cti bundle %p-%p\n", cpc,
+                cpc + len);
+            cpc = target_cache;
+        }
         if (cpc >= target_cache) {
             if (cpc > target_cache) {
                 if (cpc == start_cache) {
@@ -1905,7 +1900,6 @@ record_translation_info(dcontext_t *dcontext, fragment_t *f, instrlist_t *existi
 void
 stress_test_recreate_state(dcontext_t *dcontext, fragment_t *f, instrlist_t *ilist)
 {
-#    ifdef X86
     priv_mcontext_t mc;
     bool res;
     cache_pc cpc;
@@ -1914,7 +1908,7 @@ stress_test_recreate_state(dcontext_t *dcontext, fragment_t *f, instrlist_t *ili
     bool success_so_far = true;
     bool inside_mangle_region = false;
     bool inside_mangle_epilogue = false;
-    uint spill_xcx_outstanding_offs = UINT_MAX;
+    uint spill_ibreg_outstanding_offs = UINT_MAX;
     reg_id_t reg;
     bool spill;
     int xsp_adjust = 0;
@@ -1953,7 +1947,7 @@ stress_test_recreate_state(dcontext_t *dcontext, fragment_t *f, instrlist_t *ili
             inside_mangle_epilogue = false;
             xsp_adjust = 0;
             success_so_far = true;
-            spill_xcx_outstanding_offs = UINT_MAX;
+            spill_ibreg_outstanding_offs = UINT_MAX;
             /* go ahead and fall through and ensure we succeed w/ 0 xsp adjust */
         }
         prev_in = in;
@@ -1974,11 +1968,13 @@ stress_test_recreate_state(dcontext_t *dcontext, fragment_t *f, instrlist_t *ili
                                mangle_translation == instr_get_translation(in));
             }
 
-            if (spill_xcx_outstanding_offs != UINT_MAX) {
-                mc.xcx = (reg_t)d_r_get_tls(spill_xcx_outstanding_offs) + 1;
+            if (spill_ibreg_outstanding_offs != UINT_MAX) {
+                mc.IF_X86_ELSE(xcx, r2) =
+                    (reg_t)d_r_get_tls(spill_ibreg_outstanding_offs) + 1;
             } else {
-                mc.xcx = (reg_t)d_r_get_tls(
-                             os_tls_offset((ushort)reg_spill_tls_offs(REG_XCX))) +
+                mc.IF_X86_ELSE(xcx, r2) =
+                    (reg_t)d_r_get_tls(os_tls_offset(
+                        (ushort)reg_spill_tls_offs(IF_X86_ELSE(DR_REG_XCX, DR_REG_R2)))) +
                     1;
             }
             mc.xsp = STRESS_XSP_INIT;
@@ -1992,10 +1988,12 @@ stress_test_recreate_state(dcontext_t *dcontext, fragment_t *f, instrlist_t *ili
                 mc.xsp);
             res = recreate_app_state(dcontext, &mc, false /*just registers*/, NULL);
             LOG(THREAD, LOG_INTERP, 3,
-                "  restored res=%d pc=" PFX ", xsp=" PFX " vs " PFX ", xcx=" PFX
+                "  restored res=%d pc=" PFX ", xsp=" PFX " vs " PFX ", ibreg=" PFX
                 " vs " PFX "\n",
-                res, mc.pc, mc.xsp, STRESS_XSP_INIT - /*negate*/ xsp_adjust, mc.xcx,
-                d_r_get_tls(os_tls_offset((ushort)reg_spill_tls_offs(REG_XCX))));
+                res, mc.pc, mc.xsp, STRESS_XSP_INIT - /*negate*/ xsp_adjust,
+                mc.IF_X86_ELSE(xcx, r2),
+                d_r_get_tls(os_tls_offset(
+                    (ushort)reg_spill_tls_offs(IF_X86_ELSE(DR_REG_XCX, DR_REG_R2)))));
             /* We should only have failures at tail end of mangle regions.
              * No instrs after a failing instr should touch app memory.
              */
@@ -2005,10 +2003,11 @@ stress_test_recreate_state(dcontext_t *dcontext, fragment_t *f, instrlist_t *ili
                                                       NULL) ||
                      (!instr_reads_memory(in) && !instr_writes_memory(in)))));
 
-            /* check that xsp and xcx are adjusted properly */
+            /* check that xsp and ibreg are adjusted properly */
             ASSERT(mc.xsp == STRESS_XSP_INIT - /*negate*/ xsp_adjust);
-            ASSERT(spill_xcx_outstanding_offs == UINT_MAX ||
-                   mc.xcx == (reg_t)d_r_get_tls(spill_xcx_outstanding_offs));
+            ASSERT(spill_ibreg_outstanding_offs == UINT_MAX ||
+                   mc.IF_X86_ELSE(xcx, r2) ==
+                       (reg_t)d_r_get_tls(spill_ibreg_outstanding_offs));
 
             if (success_so_far && !res)
                 success_so_far = false;
@@ -2018,21 +2017,17 @@ stress_test_recreate_state(dcontext_t *dcontext, fragment_t *f, instrlist_t *ili
             uint offs = UINT_MAX;
             if (instr_is_DR_reg_spill_or_restore(dcontext, in, NULL, &spill, &reg,
                                                  &offs) &&
-                reg == REG_XCX) {
+                reg == IF_X86_ELSE(DR_REG_XCX, DR_REG_R2)) {
                 if (spill)
-                    spill_xcx_outstanding_offs = offs;
+                    spill_ibreg_outstanding_offs = offs;
                 else
-                    spill_xcx_outstanding_offs = UINT_MAX;
+                    spill_ibreg_outstanding_offs = UINT_MAX;
             }
         }
     }
     if (TEST(FRAG_IS_TRACE, f->flags)) {
         instrlist_clear_and_destroy(dcontext, ilist);
     }
-#    else
-    /* TODO i#4680: NYI on ARM/AArch64 */
-    ASSERT_NOT_IMPLEMENTED(false);
-#    endif /* X86/ARM */
 }
 #endif /* INTERNAL */
 

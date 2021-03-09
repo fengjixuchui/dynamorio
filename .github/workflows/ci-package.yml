@@ -1,5 +1,5 @@
 # **********************************************************
-# Copyright (c) 2020 Google, Inc.  All rights reserved.
+# Copyright (c) 2020-2021 Google, Inc.  All rights reserved.
 # **********************************************************
 
 # Redistribution and use in source and binary forms, with or without
@@ -98,7 +98,10 @@ jobs:
       env:
         CI_TARGET: package
         VERSION_NUMBER: ${{ steps.version.outputs.version_number }}
-        DEPLOY_DOCS: yes
+        # We do not update the web documentation here because a newer
+        # Doxygen is needed but we have not yet tested our tests and
+        # packages built on newer Ubuntu on GA CI.
+        DEPLOY_DOCS: no
         DYNAMORIO_CROSS_AARCHXX_LINUX_ONLY: no
 
     - name: Upload Artifacts
@@ -106,16 +109,6 @@ jobs:
       with:
         name: linux-tarball
         path: DynamoRIO-Linux-${{ steps.version.outputs.version_number }}.tar.gz
-
-    - name: Deploy Docs
-      uses: crazy-max/ghaction-github-pages@v2
-      with:
-        build_dir: html
-        repo: DynamoRIO/dynamorio_docs
-        target_branch: master
-      env:
-        # We need a personal access token for write access to another repo.
-        GH_PAT: ${{ secrets.DOCS_TOKEN }}
 
     - name: Send failure mail to dynamorio-devs
       if: failure() && github.ref == 'refs/heads/master'
